@@ -127,54 +127,115 @@ class ShiftRegisterContext(ContextModel):
 
 
 class ContextLayerModel(ContextModel):
-    """Separate context neural layer (Elman-style), section VII: new context
-    is a fixed nonlinear (here: random linear + clamp) function of old
-    context (scaled by sensitivity lambda) and new input."""
+    """DEPRECATED as of the thesis-faithful rewrite: the original 2005
+    conference papers describe a separate 'context neural layer' model as
+    if it were architecturally distinct from the combined model. Reading
+    PhD thesis Chapter 5 (Bose 2007, 'Designing a sequence machine') shows
+    this is NOT the case: there is a single combined-model formula (eq 5.4
+    in the thesis), and the 'context neural layer' behaviour is simply the
+    Lambda=0.5 (lambda=1.0) special case of that one formula, not a
+    separate architecture. This class is kept only so old experiment
+    scripts referencing it don't break, but new code should use
+    CombinedContext with Lambda=0.5 instead. See CombinedContext docstring.
+    """
 
     def __init__(self, M: int, lam: float = 0.2, seed: int = 0):
-        self.M = M
-        self.lam = lam
-        g = torch.Generator().manual_seed(seed + 1)
-        self.scramble = torch.rand(M, M, generator=g) * 0.1 + torch.eye(M) * 0.9
+        raise NotImplementedError(
+            "ContextLayerModel has been removed in the thesis-faithful "
+            "rewrite. Use CombinedContext(..., Lambda=0.5) instead, which "
+            "is the architecturally correct equivalent per thesis eq. 5.5."
+        )
 
-    def init_context(self) -> torch.Tensor:
-        return torch.zeros(self.M)
 
-    def step(self, old_context: torch.Tensor, input_code: torch.Tensor) -> torch.Tensor:
-        scrambled = self.scramble @ old_context
-        return torch.tanh(self.lam * scrambled + input_code)
+def nof_m(vec: torch.Tensor, m: int, alpha: float) -> torch.Tensor:
+    """Re-encode a real-valued vector as an ordered m-of-M rank code, per
+    thesis section 5.2.1: select the m largest components, then OVERWRITE
+    their values with the rank-order significance weights 1, alpha,
+    alpha^2, ... according to their relative rank (not their raw
+    magnitudes). All other components are zeroed. This is the same
+    'nof_m' operation used for the input encoder itself, applied here to
+    the context after combining old context and new input."""
+    M = vec.shape[0]
+    topk_idx = torch.topk(vec, m).indices
+    order = vec[topk_idx].argsort(descending=True)  # rank within the top-m
+    out = torch.zeros(M)
+    for rank, pos in enumerate(order):
+        out[topk_idx[pos]] = alpha ** rank
+    return out
+
+
+def scale(vec: torch.Tensor) -> torch.Tensor:
+    """The 'scale' function from thesis eq 5.4/5.5: normalise so the vector
+    components sum to 1 (an L1 normalisation, valid since rank-order code
+    components are non-negative)."""
+    s = vec.sum()
+    if s <= 0:
+        return vec
+    return vec / s
 
 
 class CombinedContext(ContextModel):
-    """The 'combined model' (section VIII / Fig.4): old context is
-    deterministically scrambled, scaled by x<1, the input code is added in
-    expanded form, and the K largest components are kept as the new
-    K-of-M context (K >> N). This is the model the original papers found to
-    outperform both pure shift-register and pure context-layer schemes."""
+    """The thesis's actual (and only) context model, reimplemented exactly
+    per Chapter 5, eq. 5.5 (the bounded convex-combination form, which the
+    thesis says is used interchangeably with eq. 5.4's unbounded lambda
+    form -- "In our tests... we shall investigate both of these models."):
 
-    def __init__(self, ctx_dim: int, input_dim: int, K: int, x: float = 0.3,
-                 seed: int = 0):
+        C_n = nof_m( Lambda * scale(P1 @ C_{n-1}) + (1-Lambda) * scale(P2 @ I_n),
+                     m, M, alpha )
+
+    where:
+      - P1 is a FIXED [M,M] random matrix projecting the old context
+      - P2 is a FIXED [M,D] random matrix projecting the new input into
+        context space ("expand")
+      - scale() is L1-normalisation (components sum to 1)
+      - nof_m() re-encodes the top-m components as a rank-order code with
+        significance ratio alpha (NOT just top-K masking with raw values,
+        which was a bug in the pre-thesis-correction implementation)
+
+    Lambda=0.5 corresponds to lambda=1.0 in the unbounded form: input and
+    past context equally important (thesis calls this case equivalent to
+    a pure context-neural-layer model). Lambda -> 0 makes the new context
+    increasingly input-dominated (shift-register-like, gradual forgetting
+    of the past). Lambda=1.0 is degenerate (context never updates from new
+    input at all) and is not a useful operating point.
+
+    The thesis also notes a principled, non-arbitrary choice for the
+    lambda scaling factor: lambda = alpha^(N+1), tying the context
+    modulation directly to the significance ratio alpha used for the
+    rank-order code and the number of active input components N, so that
+    the most significant bit of the OLD context is weighted below the
+    LEAST significant bit of the NEW context (ensuring gradual forgetting).
+    We expose this as `principled_lambda()`.
+    """
+
+    def __init__(self, ctx_dim: int, input_dim: int, m: int, Lambda: float = 0.3,
+                 alpha: float = 0.9, seed: int = 0):
         self.ctx_dim = ctx_dim
         self.input_dim = input_dim
-        self.K = K
-        self.x = x
+        self.m = m
+        self.Lambda = Lambda
+        self.alpha = alpha
         g = torch.Generator().manual_seed(seed + 2)
-        # deterministic scramble: fixed random projection ctx_dim -> ctx_dim
-        self.scramble = torch.rand(ctx_dim, ctx_dim, generator=g)
-        # expand input_dim -> ctx_dim
-        self.expand = torch.rand(ctx_dim, input_dim, generator=g)
+        self.P1 = torch.rand(ctx_dim, ctx_dim, generator=g)
+        self.P2 = torch.rand(ctx_dim, input_dim, generator=g)
+
+    @staticmethod
+    def principled_lambda(alpha: float, N: int) -> float:
+        """thesis p.105: 'keeping the scaling factor equal to alpha^(N+1)
+        will ensure that the most important bit of the old context is
+        given a weight less than the least important bit of the new
+        context' -- this is the lambda form (eq 5.4), not the bounded
+        Lambda form; convert with Lambda = lambda/(1+lambda) if needed."""
+        return alpha ** (N + 1)
 
     def init_context(self) -> torch.Tensor:
         return torch.zeros(self.ctx_dim)
 
     def step(self, old_context: torch.Tensor, input_code: torch.Tensor) -> torch.Tensor:
-        scrambled = self.scramble @ old_context
-        expanded_input = self.expand @ input_code
-        combined = self.x * scrambled + expanded_input
-        topk = torch.topk(combined, self.K).indices
-        new_ctx = torch.zeros(self.ctx_dim)
-        new_ctx[topk] = combined[topk]
-        return new_ctx
+        old_proj = scale(self.P1 @ old_context) if old_context.sum() > 0 else old_context
+        new_proj = scale(self.P2 @ input_code)
+        combined = self.Lambda * old_proj + (1 - self.Lambda) * new_proj
+        return nof_m(combined, self.m, self.alpha)
 
 
 class SequenceMachine2005:
