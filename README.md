@@ -1,7 +1,7 @@
 # sequence-machine-revisited
 
 A faithful PyTorch reimplementation of the on-line sequence machine from
-my PhD work (University of Manchester, 2005),
+Joy Bose's PhD work (Furber & Shapiro, University of Manchester, 2005),
 benchmarked against modern sequence models (LSTM, Transformer) and a
 dense-memory baseline, twenty years later.
 
@@ -81,6 +81,33 @@ intellectual lineage (Furber/Kanerva-style SDM with N-of-M codes), just
 applied to different problems (sequence prediction here vs. raw memory
 capacity there). See that folder's own README for details, results, and
 its own honest-limitations section.
+
+## Error-type characterization (thesis Section 9.5.2, new measurement)
+
+`experiments/06_error_characterization.py` implements a future-work item the thesis names but never carries out: "the chosen symbol may be incorrect but the output symbol whose activity was second highest or third highest may be the correct symbol... we can list the various types of errors." Every wrong prediction is classified as a near-miss (correct symbol ranked #2/#3), low-activity (no confident guess at all), or confident-wrong (a high-confidence prediction that's simply incorrect) — none of experiments 01-05 distinguish these, so a sequence reported as "5 errors" could mean very different things depending on which type dominates.
+
+Run at a deliberately reduced memory budget (addr_dim=512, vs. 2048 elsewhere) to actually push the machine past capacity rather than trivially recalling everything:
+
+| length | top-1 acc | top-3 acc | near_miss | confident_wrong |
+|---|---|---|---|---|
+| 50–200 | 100% | 100% | 0 | 0 |
+| 400 | 96.5% | 100% | 14 | 0 |
+| 800 | 77.5% | 95.6% | 145 | 35 |
+| 1200 | 54.7% | 85.9% | 374 | 169 |
+| 2000 | 28.2% | 61.9% | 675 | 761 |
+
+This surfaces something none of the earlier experiments measured: there's a **graceful-to-catastrophic transition** as the memory overloads. At moderate overload, errors are almost entirely near-misses (top-3 accuracy stays at 95%+ even as top-1 drops to 77%) — a forgivable, "imprecise but in the right neighbourhood" failure mode. But by length 2000, confident-wrong errors *exceed* near-misses for the first time — the failure mode qualitatively flips from "fuzzy but reasonable" to "confidently incorrect." `low_activity` stays at exactly zero across every length tested, meaning this memory never signals uncertainty — it always produces a confident-looking read vector even when badly wrong, which is worth flagging as a real characteristic (and risk) for any agent-memory application built on this design, not just a quirk of the test.
+
+## Brainstorming extensions: thesis future work (Section 9.4/9.5) reframed for the LLM era
+
+The thesis's own 2007 future-work list (Sections 9.4 applications, 9.5 extensions) maps onto current AI concepts more directly than you'd expect:
+
+- 9.4.1 (text/word completion prompter) is literally next-token prediction; the live question now isn't "can it predict text" but whether one-shot Hebbian memory can do *continual* learning where an LLM needs fine-tuning or RAG — which is exactly what experiments 03/04 already probe.
+- 9.4.4 (copying robot gestures from a handful of examples) maps onto few-shot imitation learning for robotics, where one-shot association from a single demonstration is still a genuinely open problem.
+- 9.5.4 (STDP instead of max-Hebbian learning) maps onto the modern interest in local, biologically-plausible learning rules as alternatives to backprop (forward-forward algorithm, predictive coding, equilibrium propagation) — STDP is the original member of that family, and is the single biggest "documented simplification" flagged across every README in this repo so far.
+- 9.5.6 (probability-vector significance encoding, instead of geometric-progression rank-order codes) is structurally a primitive attention mechanism — a normalised weighting over symbols. Implementing it would let the original 2005 "significance vector" be compared directly against literal softmax attention on identical data, a clean bridge to the "rank-order attention" thread from the original project brainstorm.
+- 9.5.7 (dynamic λ, modulated by prediction confidence) is exactly a learned gating mechanism — the conceptual ancestor of LSTM forget gates and input-dependent attention weighting.
+- 9.4.6 (Thorpe's SpikeNET — rank-order coding with no associative memory) has a modern descendant in spiking transformers and neuromorphic vision models (Intel Loihi, SpikingJelly) — worth a comparison note even without full reimplementation.
 
 ## Setup
 
