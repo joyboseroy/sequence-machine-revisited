@@ -51,6 +51,20 @@ def decode(vec: torch.Tensor, codebook: torch.Tensor) -> int:
     return int(sims.argmax().item())
 
 
+def decode_topk(vec: torch.Tensor, codebook: torch.Tensor, k: int = 3):
+    """Same decoding as `decode`, but returns the top-k candidate symbols
+    ranked by similarity, plus their similarity scores. Used to
+    characterise prediction errors per thesis section 9.5.2: 'the chosen
+    symbol may be incorrect but the output symbol whose activity was
+    second highest or third highest may be the correct symbol' -- this is
+    the metric needed to detect that case."""
+    v = vec / (vec.norm() + 1e-8)
+    cb = codebook / (codebook.norm(dim=1, keepdim=True) + 1e-8)
+    sims = cb @ v
+    topk = torch.topk(sims, k)
+    return [(int(idx), float(score)) for idx, score in zip(topk.indices, topk.values)]
+
+
 class KanervaSDM:
     """Modified Kanerva Sparse Distributed Memory with N-of-M address
     decoding and max-based ("one-shot") Hebbian learning, as in section III
@@ -267,6 +281,16 @@ class SequenceMachine2005:
         predicted_vec = self.sdm.read(self.context)        # step 3
         predicted_symbol = decode(predicted_vec, self.codebook)
         return predicted_symbol
+
+    def step_topk(self, symbol: int, k: int = 3):
+        """Same as step(), but returns the top-k ranked candidate
+        predictions with similarity scores, for error-type analysis
+        (thesis section 9.5.2)."""
+        input_code = self.codebook[symbol]
+        self.sdm.write(self.context, input_code)
+        self.context = self.context_model.step(self.context, input_code)
+        predicted_vec = self.sdm.read(self.context)
+        return decode_topk(predicted_vec, self.codebook, k=k)
 
     def run_sequence(self, seq, learn_pass=True):
         """Run a sequence once. Returns list of predictions made *before*
