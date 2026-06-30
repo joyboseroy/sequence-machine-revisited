@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import torch
 import random
 from sequence_machine_2005 import (
-    SequenceMachine2005, ShiftRegisterContext, ContextLayerModel, CombinedContext
+    SequenceMachine2005, ShiftRegisterContext, CombinedContext
 )
 
 
@@ -45,7 +45,7 @@ def main():
     M, N = 256, 11
     addr_dim = 2048
 
-    results = {"shift_register": [], "context_layer": [], "combined": []}
+    results = {"shift_register": [], "combined_input_dominated": [], "combined_balanced": []}
 
     for length in lengths:
         seq = random_sequence(alphabet_size, length, seed=length)
@@ -55,19 +55,22 @@ def main():
                                           input_N=N, addr_dim=addr_dim, addr_N=N, seed=1)
         results["shift_register"].append(count_errors(machine_sr, seq))
 
-        cl_ctx = ContextLayerModel(M=M, lam=0.2, seed=2)
+        # Lambda=0.5 == lambda=1.0 in thesis eq 5.4: input and past context
+        # equally important. Thesis calls this the "neural layer" case.
+        cl_ctx = CombinedContext(ctx_dim=512, input_dim=M, m=22, Lambda=0.5, seed=2)
         machine_cl = SequenceMachine2005(alphabet_size, cl_ctx, input_M=M,
                                           input_N=N, addr_dim=addr_dim, addr_N=N, seed=2)
-        results["context_layer"].append(count_errors(machine_cl, seq))
+        results["combined_balanced"].append(count_errors(machine_cl, seq))
 
-        cb_ctx = CombinedContext(ctx_dim=512, input_dim=M, K=22, x=1.0, seed=3)
+        # Lower Lambda: input-dominated, gradual forgetting (shift-register-like)
+        cb_ctx = CombinedContext(ctx_dim=512, input_dim=M, m=22, Lambda=0.2, seed=3)
         machine_cb = SequenceMachine2005(alphabet_size, cb_ctx, input_M=M,
                                           input_N=N, addr_dim=addr_dim, addr_N=N, seed=3)
-        results["combined"].append(count_errors(machine_cb, seq))
+        results["combined_input_dominated"].append(count_errors(machine_cb, seq))
 
         print(f"len={length:3d}  shift_register={results['shift_register'][-1]:3d}  "
-              f"context_layer={results['context_layer'][-1]:3d}  "
-              f"combined={results['combined'][-1]:3d}")
+              f"combined(Lambda=0.5)={results['combined_balanced'][-1]:3d}  "
+              f"combined(Lambda=0.2)={results['combined_input_dominated'][-1]:3d}")
 
     return lengths, results
 
