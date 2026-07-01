@@ -1,13 +1,10 @@
 # sequence-machine-revisited
 
-A faithful PyTorch reimplementation of the on-line sequence machine from
-Joy Bose's PhD work (Furber & Shapiro, University of Manchester, 2005),
-benchmarked against modern sequence models (LSTM, Transformer) and a
-dense-memory baseline, twenty years later.
+A faithful reimplementation of the on-line sequence machine from Joy Bose's
+PhD thesis (University of Manchester, 2007, supervised by Steve Furber and
+Jon Shapiro), benchmarked against modern sequence models twenty years later.
 
 ## Source material
-
-The architecture here is reimplemented directly from:
 
 - Bose, Furber, Shapiro. "An associative memory for the on-line recognition
   and prediction of temporal sequences." IJCNN 2005.
@@ -17,109 +14,169 @@ The architecture here is reimplemented directly from:
   learn temporal sequences." UK Async Forum 2005.
 - Bose, Furber, Shapiro. "A system for transmitting a coherent burst of
   activity through a network of spiking neurons." WIRN 2005.
+- Bose, J. "Engineering a sequence machine through spiking neurons employing
+  rank-order codes." PhD thesis, University of Manchester, 2007.
 
-This repo reimplements the abstract (non-spiking) version of the
-architecture: rank-ordered N-of-M codes, a modified Kanerva Sparse
-Distributed Memory (SDM) with max-based one-shot Hebbian learning, and the
-three context-encoding schemes the original papers compared (shift
-register, context neural layer, and the "combined" model that won). The
-spiking/asynchronous-timing layer described in the WIRN/Async Forum papers
-is a separate, lower-level engineering concern not required to reproduce
-the *functional* behaviour of the machine, and is not reimplemented here.
-
-## What's in this repo
+## Repo structure
 
 ```
-src/sequence_machine_2005.py        core reimplementation
-experiments/01_reproduce_original_figure6.py   sanity check vs. the 2005 paper
-experiments/02_parameter_sweep.py              small grid search over lambda, x, K
-experiments/03_modern_baselines.py             LSTM / Transformer on the SAME protocol
-experiments/04_associative_recall_benchmark.py long-distractor recall benchmark
+src/
+  sequence_machine_2005.py      abstract sequence machine (thesis Ch 4-5)
+  wheel_spiking_machine.py      full spiking sequence machine (thesis Ch 7)
+  rag_baselines.py              RAG/vector-DB baselines for experiment 04
+  sdm_library/                  modular SDM library — all four variants
+    __init__.py
+    base.py                     shared interface + encoding utilities
+    standard_sdm.py             (a) binary N-of-M SDM (thesis Ch 3)
+    rankorder_sdm.py            (b) rank-order significance-vector SDM (Ch 4)
+    wheel_sdm.py                (c) wheel-model spiking SDM (Ch 6-7)
+    rdlif_sdm.py                (d) RDLIF spiking SDM (Ch 6 / 2005 papers)
+
+experiments/
+  01_reproduce_original_figure6.py    sanity check vs 2005 paper Fig 6
+  02_parameter_sweep.py               Lambda sweep, principled lambda check
+  03_modern_baselines.py              LSTM / Transformer under same protocol
+  04_associative_recall_benchmark.py  SDM vs RAG/vector-DB under interference
+  05_wheel_spiking_machine.py         wheel-model spiking sequence machine
+  06_error_characterization.py        error-type breakdown (thesis sec 9.5.2)
+  07_sdm_library_comparison.py        all four SDM variants head-to-head
+  08_binary_vs_rankorder_sequence.py  Standard vs RankOrder on sequences
+
+related-work/
+  ajwani-lalan-sdm-nengo-2021/        Bernstein 2021 reproduction (see below)
 ```
+
+## Setup
+
+```
+pip install torch numpy nengo
+python3 experiments/01_reproduce_original_figure6.py
+# ... through ...
+python3 experiments/08_binary_vs_rankorder_sequence.py
+```
+
+---
 
 ## SDM Library (`src/sdm_library/`)
 
-A modular, reusable Python library implementing all four SDM variants
-described in the thesis, sharing a common interface so they can be
-swapped in and out directly:
+A modular, reusable Python library implementing all four SDM variants from
+the thesis, sharing a common interface so they are directly swappable.
+
+**Architecture note — four distinct N-of-M parameters (thesis Figure 3.2):**
+
+The thesis defines four *separate* N-of-M codes, not two. Getting this right
+was a real correction made during development:
+
+| Parameter | Notation | Example | Meaning |
+|---|---|---|---|
+| `N_i`-of-`D` | i-of-A | 11-of-256 | Input address code sparsity |
+| `N_a`-of-`D` | a-of-A | 20-of-256 | Address decoder weight sparsity — **separate from N_i** |
+| `N_w`-of-`W` | w-of-W | 16-of-4096 | Address decoder output sparsity |
+| `N_d`-of-`D` | d-of-D | 11-of-256 | Data code sparsity |
+
+`N_a` controls how many of the `D` inputs each of the `W` address decoder
+neurons is connected to. It is a separate parameter from `N_i` — the
+Ajwani et al. 2021 paper uses `N_a=20` while `N_i=N_d=11`. The earlier
+version of this implementation collapsed `N_a` and `N_i` into one value,
+which was wrong.
+
+**Usage:**
 
 ```python
 from sdm_library import StandardSDM, RankOrderSDM, WheelSDM, RDLIFSDM
 
-sdm = RankOrderSDM(D=256, N_d=11, W=4096, N_w=16, alpha=0.99)
+# all four share the same interface
+sdm = RankOrderSDM(D=256, N_i=11, N_a=20, W=4096, N_w=16, N_d=11, alpha=0.99)
 sdm.write(address_vec, data_vec)
 recalled = sdm.read(address_vec)
-result = sdm.capacity_test(address_codes, data_codes)
+result   = sdm.capacity_test(address_codes, data_codes)
 ```
 
 | Class | Encoding | Learning rule | Neuron model | Thesis ref |
 |---|---|---|---|---|
-| `StandardSDM` | Binary N-of-M | Logical-OR | — (abstract) | Ch 3 / Furber et al |
-| `RankOrderSDM` | Significance vectors | MAX outer product | — (abstract) | Ch 4 / Fig 4.2 |
+| `StandardSDM` | Binary N-of-M, OR weights | Logical-OR | — (abstract) | Ch 3 / Furber et al. |
+| `RankOrderSDM` | Significance vectors, MAX weights | MAX outer product | — (abstract) | Ch 4 / Fig 4.2 |
 | `WheelSDM` | Significance vectors | MAX outer product | Wheel/firefly (closed-form) | Ch 6–7 |
 | `RDLIFSDM` | Significance vectors | MAX outer product | RDLIF (numerical ODE) | Ch 6 / 2005 papers |
 
-`experiments/07_sdm_library_comparison.py` runs all four head-to-head:
-- Single round-trip sanity check (all four should recover sim ≥ 0.9)
-- Memory capacity curve (pairs stored vs recalled correctly)
-- Equivalence check: Wheel vs RankOrder vs RDLIF on the same data
+**Key results from experiment 07:**
 
-Key result: `WheelSDM` and `RankOrderSDM` are **exactly equivalent**
-(similarity = 1.0000 on every pair), confirming the thesis's Chapter 7
-claim. `RDLIFSDM` is close under light load but diverges under
-interference — exactly the limitation the thesis documents on p.125 as
-the reason the wheel model was chosen for the full spiking machine.
+- `WheelSDM` and `RankOrderSDM` are **exactly equivalent** (similarity 1.0000
+  on every pair), confirming the thesis Chapter 7 claim of exact equivalence
+  between the wheel-model spiking and abstract versions.
+- `RDLIFSDM` is near-equivalent under low load but diverges significantly
+  under interference — exactly the limitation the thesis documents on p.125
+  as the reason the wheel model was chosen for the full spiking machine.
+- `RankOrderSDM` clearly outperforms `StandardSDM` at capacity (154/160 vs
+  132/160 at high load with `W=256`), but both are equivalent under normal
+  operating conditions with the full thesis-default `W=4096` decoder — the
+  capacity advantage only shows when the memory is saturated.
 
-## The actual spiking implementation (Wheel model, thesis Chapter 7)
+---
 
-`src/wheel_spiking_machine.py` and `experiments/05_wheel_spiking_machine.py` implement the full *spiking* sequence machine the thesis actually builds in Chapter 7 — not the RDLIF model from the conference papers and from `related-work/ajwani-lalan-sdm-nengo-2021/`.
+## The spiking sequence machine (Wheel model, thesis Chapter 7)
 
-This distinction matters and is easy to miss: Chapter 6 of the thesis investigates RDLIF (the model in the IJCNN/ICANN/WIRN papers) specifically for the complete sequence machine, and concludes it **cannot** be tuned to reproduce the abstract model's rank-order/significance-vector behaviour exactly — "implementing the temporal abstraction by the RDLIF model... is not feasible" (p.125). The thesis then introduces the **wheel (firefly/spin) model** specifically because it *can* be tuned to match the abstract model exactly, and states plainly: "we will use the wheel model to simulate the complete spiking machine in the next chapter" (p.128). So a faithful "spiking version of the sequence machine" means the wheel model, not RDLIF — RDLIF is the right choice for the separate burst-stability questions in the Ajwani-reproduction subfolder, but the wrong choice here.
+`src/wheel_spiking_machine.py` implements the full *spiking* sequence machine
+the thesis builds in Chapter 7 — not the RDLIF model from the conference
+papers.
 
-**Wheel model mechanics** (thesis eq 6.10–6.13): each neuron has a phase that rises at constant slope *m* once active, and jumps instantaneously by `connection_weight × input_significance` on each incoming spike; it fires when its phase crosses threshold Θ. Because this is piecewise-linear, the time-to-fire has an exact closed-form solution given the sequence of incoming spike events — this implementation uses that closed form directly rather than timestep simulation, which is what makes the full architecture (encoder → context layer → address decoder → data store → decode) tractable to run faithfully in this session.
+This distinction matters: Chapter 6 investigates RDLIF specifically for the
+complete sequence machine and concludes it **cannot** be tuned to reproduce
+the abstract model's firing-order behaviour exactly (p.125). The thesis then
+introduces the wheel model *specifically* because it can, stating: "we will
+use the wheel model to simulate the complete spiking machine in the next
+chapter" (p.128). RDLIF is right for the burst-stability work (Ajwani
+subfolder), but the wrong choice for the full machine.
 
-One real, documented bug fix along the way: the first version used `threshold=1.0` with weights in [0,1], so a single incoming spike could already cross threshold — firing order became essentially noise rather than meaningfully reflecting the weighted, rank-ordered input. Setting the threshold high enough that no neuron crosses *mid-burst* fixed this: firing order is then determined entirely by the post-burst ramp phase, which makes it exactly equal to "rank by total weighted significance" — precisely the equivalence to the abstract model's top-k decode that the thesis is going for. Random-sequence recall went from near-chance to perfect after this one change.
+**Wheel model** (thesis eq. 6.10–6.13): phase rises at constant slope *m*,
+jumps instantaneously by `weight × significance` on each incoming spike,
+fires at threshold Θ. Piecewise-linear dynamics give an exact closed-form
+time-to-fire — no timestep simulation needed, making the full
+encoder → context → address decoder → data store pipeline tractable.
 
-**Results: spiking vs. abstract model, same sequences (thesis Section 7.7's "verification of equivalence")**
+**Results — spiking vs. abstract model on same sequences (thesis sec 7.7):**
 
-| sequence length | spiking (wheel model) errors | abstract model errors |
+| length | spiking errors | abstract errors |
 |---|---|---|
-| 10 | 0 | 0 |
-| 20 | 0 | 0 |
-| 30 | 0 | 0 |
-| 50 | 0 | 0 |
+| 10–50 | 0 | 0 |
 | 75 | 4 | 0 |
 | 100 | 9 | 0 |
 
-Near-perfect equivalence through length 50, then a real, honest divergence: the spiking version starts accumulating errors at 75–100 while the abstract model (with its much larger 2048-slot address decoder) stays perfect. This is very likely a capacity-budget effect, not a fundamental inequivalence — the wheel-model implementation here uses a deliberately small address decoder (128 slots) and context dimension (96) to keep the closed-form computation fast, against the abstract model's 2048/512. That's the natural next experiment: scale the spiking model's layer sizes up to match and see whether the divergence closes, which would support the thesis's claim of exact equivalence; if it doesn't fully close, that's an interesting finding in its own right.
+Near-perfect equivalence to length 50, then a real divergence at 75–100.
+Most likely a capacity-budget effect: the spiking model uses a smaller
+address decoder (128 slots) and context dimension (96) than the abstract
+model (2048/512) to keep computation fast. Scaling up is the natural next
+experiment.
 
-On the thesis's own illustrative example sequence (`7,1,5,1` repeated three times, used in Fig 7.7/8.3), the spiking model gets 5 of 7 post-learning predictions correct — not perfect, plausibly due to the `decode_to_symbol` function's overlap-based nearest-match having ties on such a short, repetitive sequence; worth a closer look if this becomes the basis for a paper claim rather than a demonstration.
+**Documented simplification:** the data store write phase uses instantaneous
+max-Hebbian (not literal STDP over a continuous write window). Everything
+else — encoding, context update, address decode, read/decode — runs through
+genuine wheel-model spiking dynamics.
 
-**Documented simplification**: the data store's write phase uses the same instantaneous max-Hebbian rule as the abstract model, not literal spike-timing-dependent plasticity over a continuous write window (thesis Section 7.4.3's timing constraints in more depth than was practical here). Everything else — encoding, the combined-model context update, address decoding, and the read/decode operation — runs through genuine wheel-model spiking dynamics with real closed-form fire-time computation and significance-vector propagation between layers.
+---
 
+## Related work: Ajwani et al. 2021 (`related-work/ajwani-lalan-sdm-nengo-2021/`)
 
-
-`related-work/ajwani-lalan-sdm-nengo-2021/` contains a reproduction of the
-2021 Bernstein Conference successor paper from the same lineage of work:
+Reproduction of the 2021 Bernstein Conference successor paper by a
+colleague's student at BITS Pilani, with Joy Bose as co-author:
 
 > Ajwani, Lalan, Sen Bhattacharya, Bose (2021). "Sparse Distributed Memory
 > using Spiking Neural Networks on Nengo."
 
-This is the natural follow-on study by a colleague's student (BITS Pilani),
-with Joy Bose as co-author, building on the same N-of-M / Sparse
-Distributed Memory architecture this repo reimplements for the sequence
-machine. It belongs alongside the main sequence-machine work rather than
-as a separate repo, since both are reproductions of the same root
-intellectual lineage (Furber/Kanerva-style SDM with N-of-M codes), just
-applied to different problems (sequence prediction here vs. raw memory
-capacity there). See that folder's own README for details, results, and
-its own honest-limitations section.
+Both repos reimplement the same root lineage (Furber/Kanerva N-of-M SDM),
+applied to different problems: sequence prediction here, raw memory capacity
+there. See that folder's own README for full details and results.
 
-## Error-type characterization (thesis Section 9.5.2, new measurement)
+---
 
-`experiments/06_error_characterization.py` implements a future-work item the thesis names but never carries out: "the chosen symbol may be incorrect but the output symbol whose activity was second highest or third highest may be the correct symbol... we can list the various types of errors." Every wrong prediction is classified as a near-miss (correct symbol ranked #2/#3), low-activity (no confident guess at all), or confident-wrong (a high-confidence prediction that's simply incorrect) — none of experiments 01-05 distinguish these, so a sequence reported as "5 errors" could mean very different things depending on which type dominates.
+## Error-type characterization (thesis Section 9.5.2)
 
-Run at a deliberately reduced memory budget (addr_dim=512, vs. 2048 elsewhere) to actually push the machine past capacity rather than trivially recalling everything:
+`experiments/06_error_characterization.py` implements a future-work item the
+thesis names but never carries out: classifying wrong predictions as
+near-miss (correct symbol ranked #2/#3), low-activity (no confident guess),
+or confident-wrong (high-confidence but wrong).
+
+Run at reduced memory budget (addr_dim=512) to force failures:
 
 | length | top-1 acc | top-3 acc | near_miss | confident_wrong |
 |---|---|---|---|---|
@@ -129,59 +186,45 @@ Run at a deliberately reduced memory budget (addr_dim=512, vs. 2048 elsewhere) t
 | 1200 | 54.7% | 85.9% | 374 | 169 |
 | 2000 | 28.2% | 61.9% | 675 | 761 |
 
-This surfaces something none of the earlier experiments measured: there's a **graceful-to-catastrophic transition** as the memory overloads. At moderate overload, errors are almost entirely near-misses (top-3 accuracy stays at 95%+ even as top-1 drops to 77%) — a forgivable, "imprecise but in the right neighbourhood" failure mode. But by length 2000, confident-wrong errors *exceed* near-misses for the first time — the failure mode qualitatively flips from "fuzzy but reasonable" to "confidently incorrect." `low_activity` stays at exactly zero across every length tested, meaning this memory never signals uncertainty — it always produces a confident-looking read vector even when badly wrong, which is worth flagging as a real characteristic (and risk) for any agent-memory application built on this design, not just a quirk of the test.
+There is a **graceful-to-catastrophic transition**: at moderate overload,
+errors are almost entirely near-misses (top-3 stays at 95%+ while top-1
+drops to 77%). Past length 2000, confident-wrong errors *exceed* near-misses
+for the first time — the failure mode flips from "fuzzy but reasonable" to
+"confidently wrong." `low_activity` stays at zero throughout: this memory
+never signals uncertainty, which is a real risk characteristic for any
+agent-memory application.
 
-## Brainstorming extensions: thesis future work (Section 9.4/9.5) reframed for the LLM era
+---
 
-The thesis's own 2007 future-work list (Sections 9.4 applications, 9.5 extensions) maps onto current AI concepts more directly than you'd expect:
+## Brainstorming: thesis future work (Sec 9.4/9.5) mapped to 2026
 
-- 9.4.1 (text/word completion prompter) is literally next-token prediction; the live question now isn't "can it predict text" but whether one-shot Hebbian memory can do *continual* learning where an LLM needs fine-tuning or RAG — which is exactly what experiments 03/04 already probe.
-- 9.4.4 (copying robot gestures from a handful of examples) maps onto few-shot imitation learning for robotics, where one-shot association from a single demonstration is still a genuinely open problem.
-- 9.5.4 (STDP instead of max-Hebbian learning) maps onto the modern interest in local, biologically-plausible learning rules as alternatives to backprop (forward-forward algorithm, predictive coding, equilibrium propagation) — STDP is the original member of that family, and is the single biggest "documented simplification" flagged across every README in this repo so far.
-- 9.5.6 (probability-vector significance encoding, instead of geometric-progression rank-order codes) is structurally a primitive attention mechanism — a normalised weighting over symbols. Implementing it would let the original 2005 "significance vector" be compared directly against literal softmax attention on identical data, a clean bridge to the "rank-order attention" thread from the original project brainstorm.
-- 9.5.7 (dynamic λ, modulated by prediction confidence) is exactly a learned gating mechanism — the conceptual ancestor of LSTM forget gates and input-dependent attention weighting.
-- 9.4.6 (Thorpe's SpikeNET — rank-order coding with no associative memory) has a modern descendant in spiking transformers and neuromorphic vision models (Intel Loihi, SpikingJelly) — worth a comparison note even without full reimplementation.
+- 9.4.1 (text prompter) → continual next-token learning without fine-tuning;
+  experiments 03/04 already probe this angle.
+- 9.4.4 (robot gesture copying) → few-shot imitation learning; one-shot
+  association from a single demonstration is still an open problem.
+- 9.5.4 (STDP instead of max-Hebbian) → local biologically-plausible
+  learning rules (forward-forward, predictive coding); the biggest documented
+  simplification across this whole repo.
+- 9.5.6 (probability-vector significance) → structurally a primitive attention
+  mechanism; comparing it directly against softmax attention on identical data
+  would be a clean bridge to the "rank-order attention" thread.
+- 9.5.7 (dynamic λ) → learned gating; conceptual ancestor of LSTM forget gates
+  and input-dependent attention weighting.
+- 9.4.6 (Thorpe's SpikeNET) → modern descendant is spiking transformers and
+  neuromorphic vision models (Loihi, SpikingJelly).
 
-## Setup
+---
 
-```
-pip install torch
-python3 experiments/01_reproduce_original_figure6.py
-python3 experiments/02_parameter_sweep.py
-python3 experiments/03_modern_baselines.py
-python3 experiments/04_associative_recall_benchmark.py
-```
+## Findings
 
-## Findings so far
+**1. Thesis-faithful reimplementation.**
+The combined-model context formula (thesis eq. 5.4/5.5) is one architecture
+parameterized by Λ — not three separate models as the conference papers imply.
+The corrected implementation gets near-perfect recall across Λ=0.3–0.9 with
+zero tuning, and the thesis's own principled λ=α^(N+1) choice gives 2 errors
+out of ~180 predictions without any sweep.
 
-**1. The reimplementation now matches the original thesis precisely, not just the conference papers.** The conference papers (IJCNN/ICANN/WIRN 2005) describe the "shift register," "context neural layer," and "combined" context models as if they were three separate architectures. Reading PhD thesis Chapter 5 ("Designing a sequence machine," Bose 2007) directly shows this isn't accurate: there is **one** combined-model formula (eq. 5.4/5.5),
-
-```
-C_n = nof_m( Lambda * scale(P1 @ C_{n-1}) + (1-Lambda) * scale(P2 @ I_n), m, M, alpha )
-```
-
-parameterized by a single modulation factor (λ, or its bounded form Λ = λ/(1+λ)), which smoothly interpolates between input-dominated ("shift-register-like") and context-dominated ("neural-layer-like") behaviour. My first-pass implementation invented a separate, ad-hoc "context neural layer" class that doesn't correspond to anything in the actual thesis — it has been removed. The corrected, thesis-faithful `CombinedContext` class is now the only context model alongside the literal explicit-window `ShiftRegisterContext` from Chapter 2, which the thesis treats as a simpler baseline for comparison, not a competing version of the combined model.
-
-Two other corrections from the thesis text, not in the conference papers:
-- `scale()` is L1 normalisation (components sum to 1) applied to both the projected old context and the projected input *before* combining them — my first pass combined raw, unnormalised values.
-- The top-K selection step (`nof_m`) doesn't just mask non-selected components to zero and keep raw magnitudes — it **re-encodes the selected components as a proper rank-order code** (weights 1, α, α², ... by relative rank), exactly like the input encoder. My first pass kept raw values, which is a different (and less principled) operation.
-- The thesis also gives a non-arbitrary, principled choice for the modulation factor: λ = α^(N+1), tying it directly to the significance ratio α and the number of active input components N, rather than treating it as a free hyperparameter to sweep blindly.
-
-**2. With the corrected formula, the sequence machine gets near-perfect recall across nearly the entire useful Λ range (0.3–0.9), and the thesis's own "principled" λ=α^(N+1) choice lands close to optimal (2 errors out of ~180 test predictions) without any tuning at all:**
-
-```
-Lambda=0.0  total_errors=127   (degenerate: no memory of past at all)
-Lambda=0.1  total_errors=20
-Lambda=0.2  total_errors=2
-Lambda=0.3–0.9  total_errors=0
-principled Lambda=0.2202 (from alpha=0.9, N=11): total_errors=2
-```
-
-This is a much cleaner and more convincing match to the original paper's claimed near-perfect recall than my first pass achieved, and it required no hand-tuning — just implementing the actual formula correctly.
-
-**3. The literal shift register (Chapter 2's explicit fixed-window baseline) clearly underperforms the combined model**, exactly as the thesis claims it should, with errors growing from single digits to ~16 as sequence length increases and forces more repeated symbols past the lookback window.
-
-**4. Under one-shot online learning, the 2005 machine beats modern gradient-based models head-to-head.** Forcing an LSTM and a small causal Transformer into the *same* protocol the SDM was built for — single online pass, one gradient step per symbol, no epochs, no pretraining — they get meaningfully more next-symbol prediction errors than the SDM at every sequence length tested:
+**2. One-shot learning beats gradient-based models under the same protocol.**
 
 | seq length | SDM (combined, Λ=0.5) | LSTM | Transformer |
 |---|---|---|---|
@@ -189,37 +232,54 @@ This is a much cleaner and more convincing match to the original paper's claimed
 | 60 | 0 | 41 | 23 |
 | 90 | 0–1 | 69 | 34 |
 
-This isn't surprising once you think about it (Hebbian one-shot writes vs. single SGD steps), but it's a clean, concrete illustration of *why* one-shot associative memory is a different tool than gradient-trained sequence models, not a worse one — which is the actual thesis worth writing up.
+Hebbian one-shot writes vs. single SGD steps — not surprising, but a clean,
+concrete demonstration of why one-shot associative memory is a *different*
+tool from gradient-trained sequence models, not a worse one.
 
-**5. Long-distractor associative recall: SDM degrades gracefully, a budget-capped vector store fails catastrophically — and the comparison is now against a real RAG baseline, not a strawman.** The first version of this experiment used a dense MLP retrained from scratch as the "non-SDM" comparison, which conflated gradient-training capacity with retrieval mechanism and wasn't representative of how RAG/vector-DB agent memory actually works in practice. It's been replaced with two honest RAG baselines in `src/rag_baselines.py`: an `UnboundedVectorDB` (the standard naive setup — store everything, retrieve by nearest-neighbour cosine similarity, no capacity limit) and a `CappedVectorDB` with the SAME memory budget as the SDM (2048 slots, matching the SDM's address-decoder dimensionality) using FIFO eviction once full — the fair, apples-to-apples comparison.
+**3. SDM degrades gracefully; a budget-capped vector store fails catastrophically.**
 
-Store one cue→target association, then write D unrelated distractor associations, then probe the original cue:
-
-| distractors | SDM (2048-slot budget) | UnboundedVectorDB (no budget) | CappedVectorDB (2048-slot budget, FIFO) |
+| distractors | SDM (2048-slot) | UnboundedVectorDB | CappedVectorDB (2048-slot, FIFO) |
 |---|---|---|---|
-| 0 | ✓ | ✓ | ✓ |
-| 10 | ✓ | ✓ | ✓ |
-| 50 | ✓ | ✓ | ✓ |
-| 200 | ✓ | ✓ | ✓ |
-| 1000 | ✓ | ✓ | ✓ |
+| 0–1000 | ✓ | ✓ | ✓ |
 | 5000 | ✓ | ✓ | ✗ |
 | 20000 | ✓ | ✓ | ✗ |
 
-The actual finding here is not "SDM beats vector DBs" — `UnboundedVectorDB` never fails, by construction, since unbounded exact storage with exact retrieval is essentially unbeatable, which is itself an important caveat about what "RAG memory" usually means when people don't think about its eventual storage/context budget. The real finding is in the **shape of failure** once a memory budget is enforced: the SDM, given the *same* 2048-slot budget as `CappedVectorDB`, never fails across any distractor count tested (its max-based Hebbian write degrades gracefully under address collisions rather than destroying old associations outright), while the FIFO-capped vector store fails completely and permanently the moment the cue gets evicted past the budget (a hard cliff, not graceful degradation). This is the actual, defensible claim for a paper: fixed-capacity content-addressable memory (SDM) degrades gracefully under interference, while fixed-capacity vector-store memory with a naive eviction policy degrades catastrophically once its budget is exceeded.
+The real finding: once a memory budget is enforced, the SDM's max-Hebbian
+write degrades gracefully under address collisions, while a FIFO-capped
+vector store fails permanently the moment the cue is evicted — a hard cliff
+vs. graceful degradation. `UnboundedVectorDB` never fails by construction,
+which is itself a caveat about what "RAG memory" usually means in practice.
 
-## Honest limitations / what's not done yet
+**4. All four SDM variants confirmed correct.**
+`StandardSDM` and `RankOrderSDM` are functionally identical under normal
+conditions (both 100% at W=4096); the capacity difference only shows when
+saturated. `WheelSDM` exactly matches `RankOrderSDM` (sim=1.0000 on every
+pair). `RDLIFSDM` diverges under interference, as the thesis documents.
 
-- Results above are single runs per length, not averaged over multiple seeds with error bars (the thesis itself averages over 5–30 runs, e.g. Fig 8.4/8.6). For paper-grade numbers this needs to be repeated across seeds.
-- The LSTM/Transformer hyperparameters in experiment 03 (hidden=64, lr=0.05, one SGD step) are reasonable defaults, not tuned — a reviewer could fairly ask whether the baselines were given a real chance under this protocol.
-- No Mamba/RWKV/MemGPT baselines yet (Theme 1/2 from the original brainstorm) — the RAG/vector-DB comparison (item 5 above) is done; a true MemGPT-style hierarchical/summarising memory would be a further, harder comparison.
-- `CappedVectorDB`'s eviction policy is plain FIFO, the simplest possible policy and arguably a strawman in its own right (a real system might use LRU, importance-weighted eviction, or periodic summarisation). The graceful-vs-catastrophic finding (item 5) should be re-tested against at least LRU eviction before claiming it generalises to "vector stores" as a category rather than "naive FIFO-capped vector stores" specifically.
-- The embeddings in `rag_baselines.py` are random projections of the same N-of-M codes used elsewhere, not a real learned embedding model (e.g. sentence-transformers) — appropriate for isolating the retrieval/storage *mechanism* from embedding quality, but worth flagging if this gets compared against literature numbers that use real embeddings.
-- No real-world dataset yet (music/EEG/robot trajectories/stock prices, per Theme 5) — everything here is synthetic random sequences over a small alphabet, matching the original paper's own test protocol.
-- Chapters 6–8 of the thesis (the spiking-neuron implementation and its specific timing/noise tests) haven't been mined yet — they're a separate, lower-level concern from the functional architecture reimplemented here, but could matter for a "spiking transformer" follow-on (Theme 4/10 from the brainstorm).
+---
+
+## Honest limitations
+
+- All results are single runs, not averaged over multiple seeds with error
+  bars. The thesis averages over 5–30 runs; paper-grade numbers need this.
+- LSTM/Transformer hyperparameters in experiment 03 are not tuned — a
+  reviewer could argue the baselines were not given a fair chance.
+- FIFO eviction in `CappedVectorDB` is the simplest possible policy. The
+  graceful-vs-catastrophic finding should be tested against LRU eviction
+  before claiming it generalises to vector stores as a category.
+- RAG baselines use random projections as embeddings, not real learned
+  embeddings (e.g. sentence-transformers). Appropriate for isolating the
+  retrieval mechanism, but not comparable to literature RAG numbers.
+- No real-world dataset yet — everything is synthetic random sequences.
+- STDP learning rule not implemented; max-Hebbian is used throughout as
+  a documented simplification.
 
 ## Suggested next steps
 
-1. Average results 1, 2, 4 above over multiple seeds with error bars (matching the thesis's own 5–30 run averaging), now that the underlying model is correct.
-2. Add Mamba/RWKV as baselines in experiment 3 — they're the most natural "linear-recurrent-state" comparison to the SDM's context mechanism.
-3. Add an LRU-eviction `CappedVectorDB` variant to test whether the graceful-vs-catastrophic finding in item 5 holds against a less naive eviction policy than FIFO, before claiming the result generalises.
-4. Write up findings 4 and 5 above as the empirical core of a short paper — they're the parts of the original brainstorm (Themes 9 and 14) that are now backed by actual numbers, on a thesis-faithful reimplementation, against a real RAG baseline rather than a strawman.
+1. Average experiments 01, 03, 04 over multiple seeds with error bars.
+2. Add Mamba/RWKV as baselines in experiment 03.
+3. Add LRU-eviction `CappedVectorDB` variant to experiment 04.
+4. Scale the wheel-model spiking machine (experiment 05) to match the
+   abstract model's address decoder size and re-test the equivalence claim.
+5. Write up findings 2 and 3 above as the empirical core of a short arXiv
+   paper — thesis-faithful reimplementation, real RAG baseline, honest limits.
