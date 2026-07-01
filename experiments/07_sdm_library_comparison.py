@@ -27,16 +27,17 @@ D, N_d = 64, 6        # d-of-D code (thesis default 11-of-256; scaled down)
 W, N_w = 256, 8       # w-of-W address decoder (thesis: 16-of-4096; scaled)
 ALPHA  = 0.99         # significance ratio (thesis default)
 SEED   = 42
+N_a    = 20     # a: address decoder weight sparsity (a-of-A, separate from N_d)
 RNG    = np.random.default_rng(SEED)
 
 
 def make_sdms():
     return {
-        "(a) Standard":   StandardSDM( D, N_d, W, N_w, ALPHA, SEED),
-        "(b) RankOrder":  RankOrderSDM(D, N_d, W, N_w, ALPHA, SEED),
-        "(c) Wheel":      WheelSDM(    D, N_d, W, N_w, ALPHA, SEED,
+        "(a) Standard":   StandardSDM( D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED),
+        "(b) RankOrder":  RankOrderSDM(D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED),
+        "(c) Wheel":      WheelSDM(    D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED,
                                         slope=1.0, threshold=1000.0),
-        "(d) RDLIF":      RDLIFSDM(    D, N_d, W, N_w, ALPHA, SEED,
+        "(d) RDLIF":      RDLIFSDM(    D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED,
                                         tau_r=0.5, tau_a=2.0,
                                         threshold=0.05, t_window=15.0),
     }
@@ -101,9 +102,9 @@ def test_equivalence(n_pairs=5):
     sig_addr = make_significance_vectors(n_pairs, D, N_d, ALPHA, RNG)
     sig_data = make_significance_vectors(n_pairs, D, N_d, ALPHA, RNG)
 
-    ro  = RankOrderSDM(D, N_d, W, N_w, ALPHA, SEED)
-    wh  = WheelSDM(    D, N_d, W, N_w, ALPHA, SEED, threshold=1000.0)
-    rd  = RDLIFSDM(    D, N_d, W, N_w, ALPHA, SEED, tau_a=2.0,
+    ro  = RankOrderSDM(D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED)
+    wh  = WheelSDM(    D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED, threshold=1000.0)
+    rd  = RDLIFSDM(    D, N_i=N_d, N_a=N_a, W=W, N_w=N_w, N_d=N_d, alpha=ALPHA, seed=SEED, tau_a=2.0,
                         threshold=0.05, t_window=15.0)
 
     for i in range(n_pairs):
