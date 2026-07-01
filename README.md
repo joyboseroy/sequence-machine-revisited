@@ -1,8 +1,7 @@
 # sequence-machine-revisited
 
 A faithful reimplementation of the on-line sequence machine from Joy Bose's
-PhD thesis (University of Manchester, 2007, supervised by Steve Furber and
-Jon Shapiro), benchmarked against modern sequence models twenty years later.
+PhD thesis (University of Manchester, 2007), benchmarked against modern sequence models twenty years later.
 
 ## Source material
 
