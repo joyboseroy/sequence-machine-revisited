@@ -37,6 +37,39 @@ experiments/03_modern_baselines.py             LSTM / Transformer on the SAME pr
 experiments/04_associative_recall_benchmark.py long-distractor recall benchmark
 ```
 
+## SDM Library (`src/sdm_library/`)
+
+A modular, reusable Python library implementing all four SDM variants
+described in the thesis, sharing a common interface so they can be
+swapped in and out directly:
+
+```python
+from sdm_library import StandardSDM, RankOrderSDM, WheelSDM, RDLIFSDM
+
+sdm = RankOrderSDM(D=256, N_d=11, W=4096, N_w=16, alpha=0.99)
+sdm.write(address_vec, data_vec)
+recalled = sdm.read(address_vec)
+result = sdm.capacity_test(address_codes, data_codes)
+```
+
+| Class | Encoding | Learning rule | Neuron model | Thesis ref |
+|---|---|---|---|---|
+| `StandardSDM` | Binary N-of-M | Logical-OR | — (abstract) | Ch 3 / Furber et al |
+| `RankOrderSDM` | Significance vectors | MAX outer product | — (abstract) | Ch 4 / Fig 4.2 |
+| `WheelSDM` | Significance vectors | MAX outer product | Wheel/firefly (closed-form) | Ch 6–7 |
+| `RDLIFSDM` | Significance vectors | MAX outer product | RDLIF (numerical ODE) | Ch 6 / 2005 papers |
+
+`experiments/07_sdm_library_comparison.py` runs all four head-to-head:
+- Single round-trip sanity check (all four should recover sim ≥ 0.9)
+- Memory capacity curve (pairs stored vs recalled correctly)
+- Equivalence check: Wheel vs RankOrder vs RDLIF on the same data
+
+Key result: `WheelSDM` and `RankOrderSDM` are **exactly equivalent**
+(similarity = 1.0000 on every pair), confirming the thesis's Chapter 7
+claim. `RDLIFSDM` is close under light load but diverges under
+interference — exactly the limitation the thesis documents on p.125 as
+the reason the wheel model was chosen for the full spiking machine.
+
 ## The actual spiking implementation (Wheel model, thesis Chapter 7)
 
 `src/wheel_spiking_machine.py` and `experiments/05_wheel_spiking_machine.py` implement the full *spiking* sequence machine the thesis actually builds in Chapter 7 — not the RDLIF model from the conference papers and from `related-work/ajwani-lalan-sdm-nengo-2021/`.
